@@ -8,6 +8,9 @@ ARG K9S_VERSION=v0.32.7
 ARG KUBECONFORM_VERSION=v0.6.7
 
 RUN set -eux; \
+    # The base image ships a yarn apt repo whose signing key is expired; it breaks apt-get
+    # in the devcontainer features (docker-in-docker, java, ...). Yarn is not needed here.
+    rm -f /etc/apt/sources.list.d/yarn.list; \
     arch="${TARGETARCH:-amd64}"; \
     # kind: local Kubernetes cluster in Docker
     curl -fsSLo /usr/local/bin/kind "https://kind.sigs.k8s.io/dl/${KIND_VERSION}/kind-linux-${arch}"; \
