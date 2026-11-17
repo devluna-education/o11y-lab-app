@@ -3,10 +3,12 @@
 # ---- Build stage (runs on the build platform; the jar is platform independent) ----
 FROM --platform=$BUILDPLATFORM maven:3.9-eclipse-temurin-21 AS build
 WORKDIR /workspace
+# Retry transient Maven Central download failures; keep output non-quiet so errors are visible.
+ENV MAVEN_ARGS="-B --no-transfer-progress -Daether.connector.http.retryHandler.count=5 -Daether.connector.requestTimeout=60000"
 COPY pom.xml .
-RUN --mount=type=cache,target=/root/.m2 mvn -B -q dependency:go-offline
+RUN --mount=type=cache,target=/root/.m2 mvn dependency:go-offline
 COPY src ./src
-RUN --mount=type=cache,target=/root/.m2 mvn -B -q package -DskipTests \
+RUN --mount=type=cache,target=/root/.m2 mvn -q package -DskipTests \
  && java -Djarmode=layertools -jar target/order-service.jar extract --destination target/extracted
 
 # ---- Runtime stage ----
