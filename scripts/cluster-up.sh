@@ -15,7 +15,7 @@ if ! docker info >/dev/null 2>&1; then
   echo "ERROR: Docker is not available"
   id; ls -l /var/run/docker.sock 2>&1 || true
   docker info 2>&1 | tail -5 || true
-  tail -n 40 /tmp/dockerd.log 2>/dev/null || true
+  grep -E 'level=(error|fatal)|failed to start' /tmp/dockerd.log 2>/dev/null | tail -n 25 || true
   exit 1
 fi
 
