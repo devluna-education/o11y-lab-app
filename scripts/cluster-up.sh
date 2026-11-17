@@ -11,7 +11,13 @@ for _ in $(seq 1 60); do
   docker info >/dev/null 2>&1 && break
   sleep 2
 done
-docker info >/dev/null 2>&1 || { echo "ERROR: Docker is not available"; exit 1; }
+if ! docker info >/dev/null 2>&1; then
+  echo "ERROR: Docker is not available"
+  id; ls -l /var/run/docker.sock 2>&1 || true
+  docker info 2>&1 | tail -5 || true
+  tail -n 40 /tmp/dockerd.log 2>/dev/null || true
+  exit 1
+fi
 
 cluster_healthy() {
   kind get clusters 2>/dev/null | grep -qx "$CLUSTER_NAME" \

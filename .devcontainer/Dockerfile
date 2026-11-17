@@ -1,4 +1,5 @@
-FROM mcr.microsoft.com/devcontainers/base:ubuntu-24.04
+# Python 3.12 is preinstalled in this image (no compile step at Codespace build).
+FROM mcr.microsoft.com/devcontainers/python:1-3.12-bookworm
 
 ARG TARGETARCH
 ARG KIND_VERSION=v0.24.0
