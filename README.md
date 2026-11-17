@@ -1,5 +1,9 @@
 # O11y Lab Shop
 
+[![Open in GitHub Codespaces](https://github.com/codespaces/badge.svg)](https://codespaces.new/devluna-education/o11y-lab-app?quickstart=1)
+[![ci](https://github.com/devluna-education/o11y-lab-app/actions/workflows/ci.yaml/badge.svg)](https://github.com/devluna-education/o11y-lab-app/actions/workflows/ci.yaml)
+[![e2e](https://github.com/devluna-education/o11y-lab-app/actions/workflows/e2e.yaml/badge.svg)](https://github.com/devluna-education/o11y-lab-app/actions/workflows/e2e.yaml)
+
 Aplicação de microserviços **sem nenhuma instrumentação de observabilidade** (sem SDKs, agentes,
 anotações ou variáveis de fornecedor), pronta para rodar em Kubernetes e servir de alvo para testar
 soluções de observabilidade: auto‑instrumentação, coleta de logs, APM, tracing distribuído,
@@ -52,6 +56,34 @@ Falhas contínuas por configuração (ConfigMaps `config.env` de cada serviço):
 - `CHAOS_ERROR_RATE` – fração (0.0–1.0) de requisições de negócio que retornam 500
 - `CHAOS_LATENCY_MS` – latência extra aleatória (0..N ms)
 
+## Início rápido no GitHub Codespaces
+
+1. Clique no botão **Open in GitHub Codespaces** acima (ou *Code → Codespaces → Create codespace on main*).
+   Máquina mínima: 4 vCPU / 8 GB (definido em `hostRequirements`).
+2. Aguarde a criação. O devcontainer ([`.devcontainer/`](.devcontainer/)) já vem com:
+   Docker (docker‑in‑docker), **kind**, kubectl, Helm, **k6**, k9s, kubeconform, **Java 21 + Maven**,
+   **Python 3.12** e GitHub CLI. Na inicialização, [`scripts/cluster-up.sh`](scripts/cluster-up.sh)
+   cria (ou religa) o cluster Kubernetes `kind-o11y-lab` e deixa o `kubectl` apontando para ele.
+3. No terminal, faça o deploy:
+
+   ```bash
+   kubectl apply -k deploy/kubernetes/overlays/lab
+   ```
+
+   Usa as imagens publicadas no GHCR. Para testar alterações no código sem publicar imagens:
+   `make deploy-local` (build local → `kind load` → deploy do overlay `local`).
+4. Acompanhe: `kubectl -n o11y-lab get pods -w` (ou `k9s`). O order-service leva ~1 min para ficar pronto.
+5. Abra a aba **Ports** → porta **30081** (*O11y Lab Shop*) para acessar a UI.
+
+Outros comandos úteis: `make status`, `make load` (k6 rodando a partir do Codespace contra a
+NodePort), `make undeploy`, `make cluster-down`.
+
+Ao parar e retomar o Codespace, o cluster é religado automaticamente; se não puder ser
+recuperado, ele é recriado (e o deploy precisa ser refeito).
+
+> O mesmo fluxo (`cluster-up.sh` + `deploy-local.sh` + smoke test) roda no workflow
+> [`e2e`](.github/workflows/e2e.yaml) a cada push, garantindo que o deploy em kind funciona.
+
 ## Deploy no Kubernetes
 
 Pré‑requisitos: `kubectl` ≥ 1.27 (Kustomize embutido) e um cluster com StorageClass padrão
@@ -87,7 +119,9 @@ deploy/kubernetes/
 │   ├── load-generator/
 │   ├── postgres/            # StatefulSet + PVC
 │   └── redis/
-└── overlays/lab/            # namespace, imagens GHCR, Secret do DB, Ingress, NodePort
+└── overlays/
+    ├── lab/                 # namespace, imagens GHCR, Secret do DB, Ingress, NodePort
+    └── local/               # = lab, com imagens buildadas localmente (kind / Codespaces)
 ```
 
 Nenhum código fica dentro dos YAMLs: o código vive em `services/*` e é empacotado em imagens

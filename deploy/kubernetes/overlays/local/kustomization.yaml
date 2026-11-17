@@ -1,0 +1,30 @@
+# Same as 'lab', but uses images built from local source and loaded into kind
+# (scripts/deploy-local.sh), so no registry pull is attempted.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+resources:
+  - ../lab
+
+images:
+  - name: ghcr.io/devluna-education/o11y-lab-app/catalog-service
+    newName: o11y-lab/catalog-service
+    newTag: dev
+  - name: ghcr.io/devluna-education/o11y-lab-app/order-service
+    newName: o11y-lab/order-service
+    newTag: dev
+  - name: ghcr.io/devluna-education/o11y-lab-app/frontend
+    newName: o11y-lab/frontend
+    newTag: dev
+  - name: ghcr.io/devluna-education/o11y-lab-app/load-generator
+    newName: o11y-lab/load-generator
+    newTag: dev
+
+patches:
+  - target:
+      kind: Deployment
+      labelSelector: "app.kubernetes.io/name in (catalog-service,order-service,frontend,load-generator)"
+    patch: |-
+      - op: add
+        path: /spec/template/spec/containers/0/imagePullPolicy
+        value: Never

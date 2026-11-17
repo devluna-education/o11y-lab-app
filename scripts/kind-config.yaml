@@ -1,0 +1,10 @@
+# Single-node kind cluster. The frontend NodePort (30081) is published on the host
+# (the Codespace / CI runner), so the UI is reachable at http://localhost:30081.
+kind: Cluster
+apiVersion: kind.x-k8s.io/v1alpha4
+nodes:
+  - role: control-plane
+    extraPortMappings:
+      - containerPort: 30081
+        hostPort: 30081
+        protocol: TCP

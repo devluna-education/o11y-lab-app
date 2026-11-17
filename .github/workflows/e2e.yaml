@@ -1,0 +1,70 @@
+name: e2e
+
+# Deploys the whole stack into a kind cluster (same scripts used by the Codespace)
+# and checks that the UI and the order flow work end to end.
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  kind-deploy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Create kind cluster
+        run: bash scripts/cluster-up.sh
+
+      - name: Build images and deploy local overlay
+        run: bash scripts/deploy-local.sh
+
+      - name: Smoke test through the frontend NodePort
+        run: |
+          set -euo pipefail
+          BASE=http://localhost:30081
+          for i in $(seq 1 30); do curl -fsS $BASE/healthz && break; sleep 2; done
+          curl -fsS $BASE/ | grep -q "O11y Lab Shop"
+          curl -fsS "$BASE/api/catalog/products?limit=3" | tee /dev/stderr | grep -q '"total"'
+          curl -fsS $BASE/api/order-health | grep -q UP
+          curl -fsS -X POST $BASE/api/orders -H 'Content-Type: application/json' \
+            -d '{"customerId":"ci","productId":1,"quantity":1}' | tee /dev/stderr | grep -q '"status":"CREATED"'
+
+      - name: Load generator is producing orders
+        run: |
+          set -euo pipefail
+          for i in $(seq 1 24); do
+            stats=$(curl -fsS http://localhost:30081/api/orders/stats)
+            echo "$stats"
+            total=$(echo "$stats" | python3 -c 'import json,sys; print(sum(json.load(sys.stdin).values()))')
+            [ "$total" -gt 3 ] && exit 0
+            sleep 5
+          done
+          echo "load generator did not create orders"; exit 1
+
+      - name: Diagnostics
+        if: always()
+        run: |
+          kubectl -n o11y-lab get pods,svc -o wide || true
+          kubectl -n o11y-lab get events --sort-by=.lastTimestamp | tail -40 || true
+          for d in catalog-service order-service frontend load-generator; do
+            echo "----- $d"; kubectl -n o11y-lab logs deploy/$d --tail=40 || true
+          done
+
+  devcontainer:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build devcontainer and check tooling
+        uses: devcontainers/ci@v0.3
+        with:
+          push: never
+          runCmd: |
+            java -version && mvn -v && python --version && docker --version
+            kubectl version --client && helm version --short && kind version && k6 version

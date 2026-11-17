@@ -2,7 +2,7 @@ OVERLAY   ?= deploy/kubernetes/overlays/lab
 NAMESPACE ?= o11y-lab
 KUBECTL   ?= kubectl
 
-.PHONY: help test test-python test-java render deploy undeploy status up down
+.PHONY: help test test-python test-java render cluster cluster-down deploy deploy-local undeploy status load up down
 
 help: ## Show available targets
 	@grep -E '^[a-zA-Z_-]+:.*?## ' $(MAKEFILE_LIST) | awk 'BEGIN {FS = ":.*?## "}; {printf "  %-14s %s\n", $$1, $$2}'
@@ -18,15 +18,27 @@ test-java: ## Run order-service tests
 render: ## Render Kubernetes manifests for OVERLAY
 	$(KUBECTL) kustomize $(OVERLAY)
 
-deploy: ## Deploy OVERLAY to the current kube context
+cluster: ## Create/ensure the local kind cluster
+	bash scripts/cluster-up.sh
+
+cluster-down: ## Delete the local kind cluster
+	kind delete cluster --name o11y-lab
+
+deploy: ## Deploy OVERLAY (published GHCR images) to the current kube context
 	$(KUBECTL) apply -k $(OVERLAY)
 	$(KUBECTL) -n $(NAMESPACE) rollout status deploy --timeout=300s
+
+deploy-local: ## Build images from source, load into kind and deploy
+	bash scripts/deploy-local.sh
 
 undeploy: ## Remove the application from the cluster
 	$(KUBECTL) delete -k $(OVERLAY) --ignore-not-found
 
 status: ## Show pods and services
 	$(KUBECTL) -n $(NAMESPACE) get pods,svc,ingress
+
+load: ## Run k6 from this machine against the NodePort (BASE_URL overrides)
+	BASE_URL=$${BASE_URL:-http://localhost:30081} DURATION=$${DURATION:-5m} k6 run services/load-generator/scripts/load-test.js
 
 up: ## Run locally with Docker Compose (incl. load generator)
 	docker compose --profile load up --build
