@@ -1,0 +1,17 @@
+# OS / editors
+.DS_Store
+.idea/
+.vscode/
+*.iml
+
+# Java
+target/
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+.pytest_cache/
+
+# Rendered manifests
+rendered.yaml

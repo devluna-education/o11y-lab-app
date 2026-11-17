@@ -1,0 +1,59 @@
+# Rendered at container start by the nginx image entrypoint (envsubst).
+# ${CATALOG_UPSTREAM} and ${ORDER_UPSTREAM} come from the container environment.
+
+log_format lab '$remote_addr - [$time_local] "$request" $status $body_bytes_sent '
+               '"$http_user_agent" rt=$request_time urt=$upstream_response_time';
+
+upstream catalog_service { server ${CATALOG_UPSTREAM}; keepalive 16; }
+upstream order_service   { server ${ORDER_UPSTREAM};   keepalive 16; }
+
+server {
+    listen 8080;
+    server_name _;
+    root /usr/share/nginx/html;
+    index index.html;
+
+    access_log /dev/stdout lab;
+    error_log  /dev/stderr warn;
+
+    gzip on;
+    gzip_types text/plain text/css application/json application/javascript;
+
+    proxy_http_version 1.1;
+    proxy_set_header Connection "";
+    proxy_set_header Host $host;
+    proxy_set_header X-Real-IP $remote_addr;
+    proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+    proxy_set_header X-Forwarded-Proto $scheme;
+    proxy_connect_timeout 5s;
+    proxy_read_timeout 35s;
+
+    location = /healthz {
+        access_log off;
+        default_type text/plain;
+        return 200 "ok\n";
+    }
+
+    # catalog-service: /api/catalog/products -> /products
+    location /api/catalog/ {
+        proxy_pass http://catalog_service/;
+    }
+
+    # order-service business API (path preserved)
+    location /api/orders {
+        proxy_pass http://order_service;
+    }
+
+    # order-service fault injection: /api/order-chaos/cpu -> /api/chaos/cpu
+    location /api/order-chaos/ {
+        proxy_pass http://order_service/api/chaos/;
+    }
+
+    location = /api/order-health {
+        proxy_pass http://order_service/actuator/health;
+    }
+
+    location / {
+        try_files $uri $uri/ /index.html;
+    }
+}

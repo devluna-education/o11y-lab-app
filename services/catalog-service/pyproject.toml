@@ -1,0 +1,9 @@
+[project]
+name = "catalog-service"
+version = "1.0.0"
+description = "Catalog service for the observability lab application"
+requires-python = ">=3.12"
+
+[tool.pytest.ini_options]
+pythonpath = ["."]
+testpaths = ["tests"]

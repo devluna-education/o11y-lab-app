@@ -1,0 +1,82 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>O11y Lab Shop</title>
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+  <nav>
+    <span class="brand">O11y Lab Shop</span>
+    <a href="#dashboard" data-page="dashboard" class="active">Dashboard</a>
+    <a href="#catalog" data-page="catalog">Catálogo</a>
+    <a href="#orders" data-page="orders">Pedidos</a>
+    <a href="#chaos" data-page="chaos">Chaos</a>
+  </nav>
+
+  <main>
+    <section id="dashboard" class="page active">
+      <h1>Status dos serviços</h1>
+      <div class="grid">
+        <div class="card">
+          <div class="card-title">catalog-service <span class="tag py">Python</span></div>
+          <div id="catalog-status" class="badge">…</div>
+        </div>
+        <div class="card">
+          <div class="card-title">order-service <span class="tag java">Java</span></div>
+          <div id="order-status" class="badge">…</div>
+        </div>
+      </div>
+      <h2>Pedidos por status</h2>
+      <div class="grid" id="stats"></div>
+    </section>
+
+    <section id="catalog" class="page">
+      <h1>Catálogo</h1>
+      <div class="toolbar">
+        <input id="search" type="search" placeholder="Buscar produto…" />
+        <button class="btn outline" id="prev-btn">‹</button>
+        <span id="page-info"></span>
+        <button class="btn outline" id="next-btn">›</button>
+      </div>
+      <table>
+        <thead><tr><th>ID</th><th>Produto</th><th>Categoria</th><th>Preço</th><th>Estoque</th><th></th></tr></thead>
+        <tbody id="products"></tbody>
+      </table>
+    </section>
+
+    <section id="orders" class="page">
+      <h1>Pedidos recentes</h1>
+      <div class="toolbar"><button class="btn outline" id="refresh-orders">Atualizar</button></div>
+      <table>
+        <thead><tr><th>ID</th><th>Cliente</th><th>Produto</th><th>Qtd</th><th>Total</th><th>Status</th><th>Criado</th></tr></thead>
+        <tbody id="orders-body"></tbody>
+      </table>
+    </section>
+
+    <section id="chaos" class="page">
+      <h1>Injeção de falhas</h1>
+      <p class="muted">Gera exceções, CPU alta e respostas lentas sob demanda para testar alertas e detecção de anomalias.</p>
+      <div class="grid">
+        <div class="card">
+          <div class="card-title">catalog-service <span class="tag py">Python</span></div>
+          <button class="btn sm" data-chaos="/api/catalog/chaos/error">Exceção</button>
+          <button class="btn sm" data-chaos="/api/catalog/chaos/cpu?duration_ms=2000">CPU 2s</button>
+          <button class="btn sm" data-chaos="/api/catalog/chaos/slow?duration_ms=3000">Lento 3s</button>
+        </div>
+        <div class="card">
+          <div class="card-title">order-service <span class="tag java">Java</span></div>
+          <button class="btn sm" data-chaos="/api/order-chaos/error">Exceção</button>
+          <button class="btn sm" data-chaos="/api/order-chaos/cpu?durationMs=2000">CPU 2s</button>
+          <button class="btn sm" data-chaos="/api/order-chaos/slow?durationMs=3000">Lento 3s</button>
+        </div>
+      </div>
+      <pre id="chaos-output"></pre>
+    </section>
+  </main>
+
+  <div id="toast"></div>
+  <script src="app.js"></script>
+</body>
+</html>

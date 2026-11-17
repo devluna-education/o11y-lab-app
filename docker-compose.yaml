@@ -1,0 +1,58 @@
+# Local run of the full stack: docker compose up --build
+# UI: http://localhost:8080
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: orders
+      POSTGRES_USER: orders
+      POSTGRES_PASSWORD: orders
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U orders -d orders"]
+      interval: 5s
+      retries: 20
+
+  redis:
+    image: redis:7.4-alpine
+    command: ["--save", "", "--appendonly", "no"]
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      retries: 20
+
+  catalog-service:
+    build: services/catalog-service
+    environment:
+      REDIS_URL: redis://redis:6379/0
+    depends_on:
+      redis:
+        condition: service_healthy
+
+  order-service:
+    build: services/order-service
+    environment:
+      DB_URL: jdbc:postgresql://postgres:5432/orders
+      DB_USERNAME: orders
+      DB_PASSWORD: orders
+      CATALOG_BASE_URL: http://catalog-service:8000
+    depends_on:
+      postgres:
+        condition: service_healthy
+      catalog-service:
+        condition: service_started
+
+  frontend:
+    build: services/frontend
+    ports:
+      - "8080:8080"
+    depends_on:
+      - catalog-service
+      - order-service
+
+  load-generator:
+    build: services/load-generator
+    profiles: ["load"]
+    environment:
+      BASE_URL: http://frontend:8080
+    depends_on:
+      - frontend

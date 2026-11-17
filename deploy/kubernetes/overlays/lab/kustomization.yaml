@@ -1,0 +1,37 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+namespace: o11y-lab
+
+resources:
+  - namespace.yaml
+  - ../../base
+  - ingress.yaml
+  - frontend-nodeport.yaml
+
+labels:
+  - pairs:
+      app.kubernetes.io/environment: lab
+    includeSelectors: false
+
+# Lab-only credentials. For anything beyond a disposable lab, replace with a real
+# secret manager (External Secrets, Sealed Secrets, SOPS, ...).
+secretGenerator:
+  - name: postgres-credentials
+    literals:
+      - username=orders
+      - password=orders-lab-password
+
+images:
+  - name: catalog-service
+    newName: ghcr.io/devluna-education/o11y-lab-app/catalog-service
+    newTag: latest
+  - name: order-service
+    newName: ghcr.io/devluna-education/o11y-lab-app/order-service
+    newTag: latest
+  - name: frontend
+    newName: ghcr.io/devluna-education/o11y-lab-app/frontend
+    newTag: latest
+  - name: load-generator
+    newName: ghcr.io/devluna-education/o11y-lab-app/load-generator
+    newTag: latest
