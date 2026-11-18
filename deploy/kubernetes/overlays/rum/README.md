@@ -3,6 +3,46 @@
 Injeta o snippet de RUM (Real User Monitoring) de qualquer fornecedor no frontend nginx,
 **sem alterar a imagem** nem o `index.html` do repositório.
 
+## Forma automática (recomendada): `scripts/rum-inject`
+
+Sem editar arquivo nenhum: cole o snippet do fornecedor (todos os passos, do jeito que ele gera)
+e o script faz o resto.
+
+```bash
+scripts/rum-inject --replay-rate 100 --service o11y-lab-frontend --env lab
+```
+
+Cole o snippet, pressione Enter e depois **Ctrl-D**. O script:
+
+1. extrai as tags `<script>`/`<link>` do snippet e gera o `/rum-init.js`;
+2. troca o placeholder do `allowedTracingUrls` (`your-api-domain...`) por chamadas same-origin
+   de `/api/` (propagação de `traceparent` para o backend);
+3. baixa o SDK da CDN do fornecedor **e os chunks carregados sob demanda** (ex.: o gravador do
+   session replay) e serve tudo pelo nginx com MIME JavaScript. Isso contorna CDNs que entregam
+   chunks como `binary/octet-stream` (caso do OpenObserve 0.4.3, que quebra o replay);
+4. gera o overlay em `overlays/rum-generated/` (ignorado pelo git, pois contém o token), aplica,
+   espera o rollout, remove ConfigMaps antigos e valida HTML e `Content-Type` dos arquivos.
+
+| Comando | O que faz |
+|---|---|
+| `scripts/rum-inject` | Lê o snippet colado e aplica |
+| `scripts/rum-inject --snippet arquivo.html` | Lê o snippet de um arquivo |
+| `scripts/rum-inject --reuse --env staging` | Reaplica o último snippet, mudando um campo |
+| `scripts/rum-inject --remove` | Remove o RUM (frontend volta ao original) |
+| `scripts/rum-inject --dry-run ...` | Só gera e mostra os manifests |
+| `scripts/rum-inject --help` | Todas as opções |
+
+Opções úteis: `--service`, `--env`, `--app-id`, `--version`, `--replay-rate N`,
+`--session-rate N`, `--cdn` (não hospedar o SDK), `--base lab|local` (padrão: detecta pela
+imagem em uso), `--deployment`/`--container`/`--namespace`/`--html-root` (outro frontend nginx),
+`--url` (endereço usado na validação, padrão `http://localhost:30081`).
+
+Atalhos no Makefile: `make rum`, `make rum SNIPPET=arquivo.html ARGS="--replay-rate 100"`,
+`make rum-reuse`, `make rum-remove`.
+
+O restante deste README descreve a forma **manual** (editando os arquivos desta pasta), que é
+o que o script automatiza.
+
 ## Como funciona
 
 | Arquivo | Conteúdo | Onde é montado no container |

@@ -2,7 +2,7 @@ OVERLAY   ?= deploy/kubernetes/overlays/lab
 NAMESPACE ?= o11y-lab
 KUBECTL   ?= kubectl
 
-.PHONY: help test test-python test-java render cluster cluster-down deploy deploy-local undeploy status load up down
+.PHONY: help test test-python test-java render cluster cluster-down deploy deploy-local undeploy status load up down rum rum-reuse rum-remove
 
 help: ## Show available targets
 	@grep -E '^[a-zA-Z_-]+:.*?## ' $(MAKEFILE_LIST) | awk 'BEGIN {FS = ":.*?## "}; {printf "  %-14s %s\n", $$1, $$2}'
@@ -45,3 +45,12 @@ up: ## Run locally with Docker Compose (incl. load generator)
 
 down: ## Stop local Docker Compose stack
 	docker compose --profile load down -v
+
+rum: ## Inject a RUM snippet into the frontend (paste it, or SNIPPET=file); ARGS for extra flags
+	scripts/rum-inject $(if $(SNIPPET),--snippet $(SNIPPET)) $(ARGS)
+
+rum-reuse: ## Re-apply the last RUM snippet (ARGS for extra flags, e.g. ARGS="--env lab")
+	scripts/rum-inject --reuse $(ARGS)
+
+rum-remove: ## Remove the RUM injection from the frontend
+	scripts/rum-inject --remove

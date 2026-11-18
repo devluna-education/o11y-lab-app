@@ -1,0 +1,388 @@
+#!/usr/bin/env python3
+"""Inject a browser RUM snippet into the nginx frontend, without rebuilding its image.
+
+Paste the HTML snippet your RUM vendor gives you (all steps, as-is). This tool:
+  1. extracts the <script>/<link> tags from it and builds /rum-init.js;
+  2. points trace propagation (allowedTracingUrls placeholder) to same-origin /api/ calls;
+  3. self-hosts the vendor SDK files (and their lazy-loaded chunks) so nginx serves
+     them with a JavaScript MIME type (works around CDNs that serve chunks as
+     binary/octet-stream, which breaks session replay);
+  4. generates a Kustomize overlay in deploy/kubernetes/overlays/rum-generated/ (git-ignored),
+     applies it, waits for the rollout and validates the result.
+
+Examples:
+  scripts/rum-inject                         # paste the snippet, then Ctrl-D
+  scripts/rum-inject --snippet snippet.html --replay-rate 100
+  scripts/rum-inject --reuse --env lab       # re-run with the last snippet
+  scripts/rum-inject --remove                # back to the plain frontend
+"""
+from __future__ import annotations
+
+import argparse
+import html.parser
+import json
+import re
+import shutil
+import subprocess
+import sys
+import urllib.parse
+import urllib.request
+from pathlib import Path
+
+REPO = Path(__file__).resolve().parent.parent
+OVERLAYS = REPO / "deploy" / "kubernetes" / "overlays"
+OUT = OVERLAYS / "rum-generated"
+SNIPPET_COPY = OUT / "snippet.html"
+SDK_MOUNT = "rum-sdk"            # served at /rum-sdk/<host>/<path>
+CM_LABEL = "o11y-lab.io/rum"
+CONFIGMAP_LIMIT = 1_000_000      # ConfigMap data limit is 1 MiB
+
+SAME_ORIGIN_MATCH = "function (url) { return url.indexOf(window.location.origin + '/api/') === 0; }"
+
+
+def info(msg: str) -> None:
+    print(f"\033[1;34m==>\033[0m {msg}", flush=True)
+
+
+def warn(msg: str) -> None:
+    print(f"\033[1;33m[aviso]\033[0m {msg}", flush=True)
+
+
+def die(msg: str) -> None:
+    print(f"\033[1;31m[erro]\033[0m {msg}", file=sys.stderr, flush=True)
+    sys.exit(1)
+
+
+def kubectl(*args: str, check: bool = True, capture: bool = False) -> subprocess.CompletedProcess:
+    cmd = ["kubectl", *args]
+    res = subprocess.run(cmd, text=True, capture_output=capture)
+    if check and res.returncode != 0:
+        if capture:
+            sys.stderr.write(res.stdout + res.stderr)
+        die(f"falhou: {' '.join(cmd)}")
+    return res
+
+
+# --------------------------------------------------------------------------- snippet parsing
+class SnippetParser(html.parser.HTMLParser):
+    """Collects inline scripts, external script URLs and preconnect hosts, in order."""
+
+    def __init__(self) -> None:
+        super().__init__(convert_charrefs=True)
+        self.inline: list[str] = []
+        self.external: list[str] = []
+        self.preconnect: list[str] = []
+        self._in_script = False
+        self._buf: list[str] = []
+
+    def handle_starttag(self, tag, attrs):
+        a = dict(attrs)
+        if tag == "script":
+            if a.get("src"):
+                self.external.append(a["src"])
+            else:
+                self._in_script, self._buf = True, []
+        elif tag == "link" and a.get("rel") in ("preconnect", "dns-prefetch") and a.get("href"):
+            if a["href"] not in self.preconnect:
+                self.preconnect.append(a["href"])
+
+    def handle_endtag(self, tag):
+        if tag == "script" and self._in_script:
+            self.inline.append("".join(self._buf).strip())
+            self._in_script = False
+
+    def handle_data(self, data):
+        if self._in_script:
+            self._buf.append(data)
+
+
+def read_snippet(args) -> str:
+    if args.reuse:
+        if not SNIPPET_COPY.exists():
+            die(f"nenhum snippet salvo em {SNIPPET_COPY}; rode sem --reuse")
+        return SNIPPET_COPY.read_text()
+    if args.snippet:
+        return Path(args.snippet).read_text()
+    if sys.stdin.isatty():
+        print("Cole o snippet do RUM (todos os passos, como o fornecedor gerou).")
+        print("Depois pressione Enter e Ctrl-D:\n")
+    data = sys.stdin.read()
+    if not data.strip():
+        die("snippet vazio")
+    return data
+
+
+def set_quoted(js: str, key: str, value: str) -> str:
+    """Replace the first `key: '...'` (quoted literal) with value."""
+    pat = re.compile(r"(\b%s\s*:\s*)(['\"])(?:(?!\2).)*\2" % re.escape(key))
+    if not pat.search(js):
+        warn(f"campo '{key}' não encontrado no snippet; ignorado")
+        return js
+    return pat.sub(lambda m: f"{m.group(1)}'{value}'", js, count=1)
+
+
+def transform_js(js: str, args) -> str:
+    # Trace propagation: replace vendor placeholders (e.g. 'https://your-api-domain.com/api').
+    js, n = re.subn(r"match\s*:\s*(['\"])[^'\"]*your-api[^'\"]*\1", "match: " + SAME_ORIGIN_MATCH, js)
+    if n:
+        info(f"allowedTracingUrls -> chamadas same-origin para /api/ ({n} regra)")
+    for key, val in (("service", args.service), ("env", args.env), ("applicationId", args.app_id),
+                     ("version", args.version)):
+        if val:
+            js = set_quoted(js, key, val)
+    if args.replay_rate is not None:
+        js, n = re.subn(r"(sessionReplaySampleRate\s*:\s*)\d+", rf"\g<1>{args.replay_rate}", js)
+        if not n:
+            warn("sessionReplaySampleRate não encontrado no snippet")
+    if args.session_rate is not None:
+        js, n = re.subn(r"(sessionSampleRate\s*:\s*)\d+", rf"\g<1>{args.session_rate}", js)
+        if not n:
+            warn("sessionSampleRate não encontrado no snippet")
+    return js
+
+
+# --------------------------------------------------------------------------- SDK self-hosting
+JS_URL = re.compile(r"""(['"])(https://[^'"\s]+?\.js)\1""")
+# webpack chunk map, e.g. o.u=t=>"chunks/"+t+"-"+{recorder:"8d17..",profiler:"e94f.."}[t]+"-openobserve-rum.js"
+CHUNK_MAP = re.compile(r'"([\w./-]*)"\+\w+\+"-"\+\{([^{}]*)\}\[\w+\]\+"([^"]+\.js)"')
+
+
+def fetch(url: str) -> bytes:
+    req = urllib.request.Request(url, headers={"User-Agent": "o11y-lab-rum-inject"})
+    with urllib.request.urlopen(req, timeout=30) as r:
+        return r.read()
+
+
+def local_path(url: str) -> str:
+    u = urllib.parse.urlparse(url)
+    return f"{u.netloc}{u.path}"
+
+
+def self_host(urls: list[str], sdk_dir: Path) -> dict[str, str]:
+    """Download SDK bundles plus webpack chunks. Returns {relative_path: local_file}."""
+    files: dict[str, str] = {}
+    queue = list(dict.fromkeys(urls))
+    seen: set[str] = set()
+    while queue:
+        url = queue.pop(0)
+        if url in seen:
+            continue
+        seen.add(url)
+        rel = local_path(url)
+        info(f"baixando {url}")
+        try:
+            body = fetch(url)
+        except Exception as e:  # noqa: BLE001
+            die(f"não consegui baixar {url}: {e}")
+        key = re.sub(r"[^A-Za-z0-9._-]", "_", rel)
+        (sdk_dir / key).write_bytes(body)
+        files[rel] = key
+        text = body.decode("utf-8", "ignore")
+        base = url.rsplit("/", 1)[0] + "/"
+        for prefix, mapping, suffix in CHUNK_MAP.findall(text):
+            for name, chash in re.findall(r'(\w+)\s*:\s*"([^"]+)"', mapping):
+                queue.append(urllib.parse.urljoin(base, f"{prefix}{name}-{chash}{suffix}"))
+    return files
+
+
+# --------------------------------------------------------------------------- overlay generation
+def detect_base(args) -> str:
+    if args.base:
+        return args.base
+    res = kubectl("-n", args.namespace, "get", "deploy", args.deployment,
+                  "-o", "jsonpath={.spec.template.spec.containers[0].image}", check=False, capture=True)
+    image = res.stdout.strip()
+    base = "local" if image.startswith("o11y-lab/") else "lab"
+    info(f"base detectada: {base} (imagem atual: {image or 'desconhecida'})")
+    return base
+
+
+def write_overlay(args, base: str, head_html: str, sdk_files: dict[str, str]) -> None:
+    patch_mounts = [
+        {"name": "rum", "mountPath": "/etc/nginx/templates/rum.conf.template", "subPath": "rum.conf.template"},
+        {"name": "rum", "mountPath": f"{args.html_root}/rum-init.js", "subPath": "rum-init.js"},
+    ]
+    volumes = [{"name": "rum", "configMap": {"name": "frontend-rum"}}]
+    generators = [{"name": "frontend-rum", "files": ["rum.conf.template", "rum-init.js"]}]
+    if sdk_files:
+        patch_mounts.append({"name": "rum-sdk", "mountPath": f"{args.html_root}/{SDK_MOUNT}"})
+        volumes.append({"name": "rum-sdk", "configMap": {
+            "name": "frontend-rum-sdk",
+            "items": [{"key": k, "path": rel} for rel, k in sdk_files.items()]}})
+        generators.append({"name": "frontend-rum-sdk", "files": [f"{k}=sdk/{k}" for k in sdk_files.values()]})
+
+    patch = {
+        "apiVersion": "apps/v1", "kind": "Deployment", "metadata": {"name": args.deployment},
+        "spec": {"template": {"spec": {
+            "containers": [{"name": args.container, "volumeMounts": patch_mounts}],
+            "volumes": volumes}}},
+    }
+    kustomization = {
+        "apiVersion": "kustomize.config.k8s.io/v1beta1",
+        "kind": "Kustomization",
+        "namespace": args.namespace,
+        "resources": [f"../{base}"],
+        "generatorOptions": {"labels": {CM_LABEL: "generated"}},
+        "configMapGenerator": generators,
+        "patches": [{"target": {"kind": "Deployment", "name": args.deployment}, "patch": json.dumps(patch)}],
+    }
+    # JSON is valid YAML; avoids a PyYAML dependency.
+    header = "# GENERATED by scripts/rum-inject - do not edit; re-run the script instead.\n"
+    (OUT / "kustomization.yaml").write_text(header + json.dumps(kustomization, indent=2) + "\n")
+
+    if "'" in head_html:
+        die("as tags do <head> contêm aspas simples; não é possível usar no sub_filter")
+    (OUT / "rum.conf.template").write_text(
+        "# GENERATED by scripts/rum-inject\n"
+        f"sub_filter '<head>' '<head>{head_html}';\n"
+        "sub_filter_once on;\n")
+
+
+def build(args) -> tuple[str, dict[str, str]]:
+    raw = read_snippet(args)
+    p = SnippetParser()
+    p.feed(raw)
+    if not p.inline and not p.external:
+        die("nenhuma tag <script> encontrada no snippet")
+    info(f"snippet: {len(p.inline)} script(s) inline, {len(p.external)} externo(s), "
+         f"{len(p.preconnect)} preconnect/dns-prefetch")
+
+    if OUT.exists():
+        shutil.rmtree(OUT)
+    (OUT / "sdk").mkdir(parents=True)
+    SNIPPET_COPY.write_text(raw)
+
+    js = "\n\n".join(p.inline)
+    js = transform_js(js, args)
+
+    sdk_files: dict[str, str] = {}
+    external = list(p.external)
+    if not args.cdn:
+        urls = [m.group(2) for m in JS_URL.finditer(js)] + external
+        sdk_files = self_host(urls, OUT / "sdk")
+        for url in set(urls):
+            js = js.replace(url, f"/{SDK_MOUNT}/{local_path(url)}")
+        external = [f"/{SDK_MOUNT}/{local_path(u)}" for u in external]
+        size = sum((OUT / "sdk" / k).stat().st_size for k in sdk_files.values())
+        if size > CONFIGMAP_LIMIT:
+            die(f"SDK tem {size} bytes, acima do limite de um ConfigMap; use --cdn")
+        info(f"SDK self-hosted: {len(sdk_files)} arquivo(s), {size // 1024} KB")
+
+    (OUT / "rum-init.js").write_text(
+        "/* GENERATED by scripts/rum-inject from the vendor snippet - do not edit. */\n" + js + "\n")
+
+    # Preconnect only to hosts still reached directly by the browser (ingest API, CDN if --cdn).
+    hosted_hosts = {urllib.parse.urlparse("https://" + rel).netloc for rel in sdk_files}
+    links = "".join(
+        f'<link rel="preconnect" href="{h}" crossorigin>'
+        for h in p.preconnect if urllib.parse.urlparse(h).netloc not in hosted_hosts)
+    scripts = "".join(f'<script src="{u}"></script>' for u in external)
+    head_html = links + scripts + '<script src="/rum-init.js"></script>'
+    return head_html, sdk_files
+
+
+# --------------------------------------------------------------------------- apply / validate
+def validate(args, sdk_files: dict[str, str]) -> bool:
+    ok = True
+    try:
+        page = fetch(args.url + "/").decode("utf-8", "ignore")
+        if "/rum-init.js" in page:
+            info(f"OK  {args.url}/ contém <script src=\"/rum-init.js\">")
+        else:
+            warn(f"{args.url}/ ainda não contém a tag do RUM")
+            ok = False
+        for path in ["/rum-init.js"] + [f"/{SDK_MOUNT}/{rel}" for rel in sdk_files]:
+            req = urllib.request.Request(args.url + path, method="HEAD")
+            with urllib.request.urlopen(req, timeout=10) as r:
+                ctype = r.headers.get("Content-Type", "")
+            mark = "OK " if "javascript" in ctype else "ERR"
+            ok &= mark == "OK "
+            print(f"    {mark} {path}  ({ctype})")
+    except Exception as e:  # noqa: BLE001
+        warn(f"não consegui validar via {args.url}: {e} (use --url se a NodePort for outra)")
+        return False
+    return ok
+
+
+def cmd_apply(args) -> None:
+    base = detect_base(args)
+    head_html, sdk_files = build(args)
+    write_overlay(args, base, head_html, sdk_files)
+    info(f"overlay gerado em {OUT.relative_to(REPO)}")
+    kubectl("kustomize", str(OUT), capture=True)  # fail early on render errors
+    if args.dry_run:
+        print(kubectl("kustomize", str(OUT), capture=True).stdout)
+        return
+    info("aplicando (server-side apply)")
+    kubectl("apply", "--server-side", "--force-conflicts", "-k", str(OUT))
+    info("aguardando rollout do frontend")
+    res = kubectl("-n", args.namespace, "rollout", "status", f"deploy/{args.deployment}",
+                  "--timeout=180s", check=False)
+    if res.returncode != 0:
+        kubectl("-n", args.namespace, "get", "pods", "-l", f"app.kubernetes.io/name={args.deployment}",
+                check=False)
+        kubectl("-n", args.namespace, "logs", f"deploy/{args.deployment}", "--tail=20", check=False)
+        die("rollout não concluiu; para voltar ao frontend original: scripts/rum-inject --remove")
+    prune_configmaps(args, keep_current=True)
+    info("validando")
+    ok = validate(args, sdk_files)
+    print()
+    print("Pronto. No navegador, recarregue sem cache (Ctrl/Cmd+Shift+R) e confira no DevTools:")
+    print("  Console sem erros do SDK; Network com rum-init.js, /rum-sdk/... e envios ao fornecedor.")
+    if not ok:
+        sys.exit(2)
+
+
+def prune_configmaps(args, keep_current: bool) -> None:
+    keep: set[str] = set()
+    if keep_current:
+        res = kubectl("-n", args.namespace, "get", "deploy", args.deployment, "-o",
+                      "jsonpath={range .spec.template.spec.volumes[*]}{.configMap.name}{' '}{end}",
+                      check=False, capture=True)
+        keep = set(res.stdout.split())
+    res = kubectl("-n", args.namespace, "get", "configmap", "-l", f"{CM_LABEL}=generated",
+                  "-o", "jsonpath={.items[*].metadata.name}", check=False, capture=True)
+    old = [n for n in res.stdout.split() if n not in keep]
+    if old:
+        kubectl("-n", args.namespace, "delete", "configmap", *old, check=False, capture=True)
+        info(f"removidos {len(old)} ConfigMap(s) antigo(s) do RUM")
+
+
+def cmd_remove(args) -> None:
+    base = detect_base(args)
+    info(f"reaplicando overlays/{base} sem o RUM")
+    kubectl("apply", "--server-side", "--force-conflicts", "-k", str(OVERLAYS / base))
+    kubectl("-n", args.namespace, "rollout", "status", f"deploy/{args.deployment}", "--timeout=180s")
+    prune_configmaps(args, keep_current=False)
+    info("RUM removido (o snippet continua salvo; reative com: scripts/rum-inject --reuse)")
+
+
+def main() -> None:
+    ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    src = ap.add_mutually_exclusive_group()
+    src.add_argument("--snippet", metavar="ARQ", help="arquivo com o snippet HTML (padrão: ler da entrada)")
+    src.add_argument("--reuse", action="store_true", help="reutilizar o último snippet salvo")
+    src.add_argument("--remove", action="store_true", help="remover o RUM e voltar ao frontend original")
+    ap.add_argument("--service", help="sobrescreve 'service' do snippet")
+    ap.add_argument("--env", help="sobrescreve 'env' do snippet")
+    ap.add_argument("--app-id", help="sobrescreve 'applicationId' do snippet")
+    ap.add_argument("--version", help="sobrescreve 'version' do snippet")
+    ap.add_argument("--replay-rate", type=int, metavar="N", help="sessionReplaySampleRate (0-100)")
+    ap.add_argument("--session-rate", type=int, metavar="N", help="sessionSampleRate (0-100)")
+    ap.add_argument("--cdn", action="store_true", help="não hospedar o SDK; carregar direto da CDN do fornecedor")
+    ap.add_argument("--base", choices=["lab", "local"], help="overlay base (padrão: detecta pela imagem em uso)")
+    ap.add_argument("--namespace", default="o11y-lab")
+    ap.add_argument("--deployment", default="frontend")
+    ap.add_argument("--container", default="frontend")
+    ap.add_argument("--html-root", default="/usr/share/nginx/html", help="root do nginx no container")
+    ap.add_argument("--url", default="http://localhost:30081", help="URL do frontend para validação")
+    ap.add_argument("--dry-run", action="store_true", help="só gerar e mostrar os manifests, sem aplicar")
+    args = ap.parse_args()
+    args.url = args.url.rstrip("/")
+    if shutil.which("kubectl") is None:
+        die("kubectl não encontrado")
+    cmd_remove(args) if args.remove else cmd_apply(args)
+
+
+if __name__ == "__main__":
+    main()
