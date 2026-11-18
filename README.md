@@ -134,9 +134,9 @@ Para criar um novo ambiente (ex.: outro namespace, outro ingress, tags fixas), c
 dela num overlay próprio via `patches`, mantendo a base limpa.
 
 Para RUM (monitoramento do navegador), o overlay [`overlays/rum`](deploy/kubernetes/overlays/rum/)
-já vem pronto. O jeito mais simples é rodar `scripts/rum-inject` (ou `make rum`) e colar o
-snippet do fornecedor: o script gera os arquivos, hospeda o SDK, aplica e valida. Detalhes e
-forma manual no [README do overlay](deploy/kubernetes/overlays/rum/README.md).
+já vem pronto: cole o snippet do fornecedor em `rum-init.js` e rode
+`kubectl apply -k deploy/kubernetes/overlays/rum`. Passo a passo no
+[README do overlay](deploy/kubernetes/overlays/rum/README.md).
 
 ### Imagens
 
