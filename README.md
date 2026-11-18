@@ -121,7 +121,8 @@ deploy/kubernetes/
 │   └── redis/
 └── overlays/
     ├── lab/                 # namespace, imagens GHCR, Secret do DB, Ingress, NodePort
-    └── local/               # = lab, com imagens buildadas localmente (kind / Codespaces)
+    ├── local/               # = lab, com imagens buildadas localmente (kind / Codespaces)
+    └── rum/                 # injeta snippet de RUM no frontend via nginx sub_filter (sem rebuild)
 ```
 
 Nenhum código fica dentro dos YAMLs: o código vive em `services/*` e é empacotado em imagens
@@ -131,6 +132,11 @@ pelo Kustomize (o hash no nome força rollout quando a configuração muda).
 Para criar um novo ambiente (ex.: outro namespace, outro ingress, tags fixas), copie
 `overlays/lab` e ajuste. Para testar uma ferramenta de observabilidade, adicione as anotações/labels
 dela num overlay próprio via `patches`, mantendo a base limpa.
+
+Para RUM (monitoramento do navegador), o overlay [`overlays/rum`](deploy/kubernetes/overlays/rum/)
+já vem pronto: cole o snippet do fornecedor em `rum-init.js` e rode
+`kubectl apply -k deploy/kubernetes/overlays/rum`. Passo a passo no
+[README do overlay](deploy/kubernetes/overlays/rum/README.md).
 
 ### Imagens
 

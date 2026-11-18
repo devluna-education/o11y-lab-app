@@ -1,0 +1,9 @@
+# Loaded by nginx at http level (rendered into /etc/nginx/conf.d/rum.conf).
+# sub_filter only rewrites text/html responses, so API (JSON) and static JS/CSS are untouched.
+# The replacement is a single-quoted nginx string: do NOT use single quotes inside it.
+
+sub_filter '<head>' '<head><script src="/rum-init.js"></script>';
+sub_filter_once on;
+
+# Optional: preconnect to the vendor CDN / ingest endpoint for faster loading, e.g.:
+# sub_filter '<head>' '<head><link rel="preconnect" href="https://browsersdk.openobserve.ai" crossorigin><link rel="preconnect" href="https://api.openobserve.ai" crossorigin><script src="/rum-init.js"></script>';

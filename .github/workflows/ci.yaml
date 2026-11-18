@@ -47,8 +47,10 @@ jobs:
       - name: Render and validate Kubernetes manifests
         run: |
           curl -sSL https://github.com/yannh/kubeconform/releases/download/v0.6.7/kubeconform-linux-amd64.tar.gz | tar xz kubeconform
-          kubectl kustomize deploy/kubernetes/overlays/lab > rendered.yaml
-          ./kubeconform -strict -summary rendered.yaml
+          for overlay in lab rum; do
+            kubectl kustomize deploy/kubernetes/overlays/$overlay > rendered-$overlay.yaml
+            ./kubeconform -strict -summary rendered-$overlay.yaml
+          done
 
   build-images:
     needs: [test-catalog-service, test-order-service, validate-manifests]

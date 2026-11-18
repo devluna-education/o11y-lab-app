@@ -1,0 +1,49 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+# Injects a browser RUM snippet into the frontend without rebuilding its image.
+# See README.md in this folder.
+
+# Required: the ConfigMap generated here must live in the same namespace as the
+# Deployment, otherwise its hashed name is not propagated to the volume.
+namespace: o11y-lab
+
+# What this overlay builds on: ../lab (GHCR images) or ../local (images built by
+# scripts/deploy-local.sh). Must match how the app was deployed.
+resources:
+  - ../lab
+
+# Hash suffix changes whenever a file changes -> frontend rolls out automatically.
+configMapGenerator:
+  - name: frontend-rum
+    files:
+      - rum.conf.template
+      - rum-init.js
+
+patches:
+  - target:
+      kind: Deployment
+      name: frontend
+    patch: |-
+      apiVersion: apps/v1
+      kind: Deployment
+      metadata:
+        name: frontend
+      spec:
+        template:
+          spec:
+            containers:
+              - name: frontend
+                volumeMounts:
+                  # Rendered by the nginx entrypoint into /etc/nginx/conf.d/rum.conf (http level).
+                  - name: rum
+                    mountPath: /etc/nginx/templates/rum.conf.template
+                    subPath: rum.conf.template
+                  # Served as /rum-init.js next to the app's static files.
+                  - name: rum
+                    mountPath: /usr/share/nginx/html/rum-init.js
+                    subPath: rum-init.js
+            volumes:
+              - name: rum
+                configMap:
+                  name: frontend-rum
